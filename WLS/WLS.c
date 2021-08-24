@@ -2,7 +2,7 @@
  * Project name:  Water Level Sensor
      Capacitive Water Level Sensor
  * Copyright:
-     (c) BW, 2021.
+     (c) BW, 2021
  * Configuration:
      MCU:             PIC16F1824
      Oscillator:      Internal, 32.0000 MHz
