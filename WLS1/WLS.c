@@ -7,6 +7,8 @@
      MCU:             PIC16F1824
      Oscillator:      Internal, 32.0000 MHz
    * NOTES:
+     - Meter = PWM out
+     - Piezo buzzer = PWM output
 */
 //======================================================================
 //
@@ -103,7 +105,7 @@ static unsigned int DC_offset;
 void interrupt(void)
 {
 
-     // timer0 interrupt
+     // Timer0 interrupt
      if (INTCON.TMR0IF)
      {
 
@@ -565,45 +567,8 @@ void main()
     ANSELC.ANSC1 = 1;     // pulse in
     ANSELC.ANSC2 = 1;     // pulse in
     
-   // timer 1 gating
-    T1GCON.TMR1GE = 1;
-    T1GCON.T1GPOL = 1; // timer 1 gate active high
-    T1GCON.T1GTM = 0;
-    T1GCON.T1GSPM = 0;
-    T1GCON.T1GSS1 = 1;  // comparator 2
-    T1GCON.T1GSS0 = 1;  // comparator 2
-    T1CON.T1CKPS0 = 0;
-    T1CON.T1CKPS1 = 0;                // timer 1 prescaler = 0
-    T1CON.TMR1CS0 = 1;                // timer 1 clock = Fosc
-    T1CON.TMR1CS1 = 0;                // timer 1 clock = Fosc
-    T1CON.T1OSCEN = 0;                // timer 1 internal oscillator
-    T1CON.TMR1ON = 1;                // timer 1 active
-    TMR1H = 0;          // initial timer values
-    TMR1L = 0;
-    PIR1.TMR1IF = 0;
 
-
-    // DAC 
-    DACCON0.DACEN = 1;          // DAC enable
-    DACCON0.DACLPS = 0;         // Negative reference
-    DACCON0.DACOE = 1;          // DAC output enable
-    DACCON0.DACPSS0 = 0;        // VDD
-    DACCON0.DACPSS1 = 0;        // VDD
-    DACCON0.DACNSS = 0;         // GND
-
-    // Get initial DAC value from EEPROM
-    DAC_value = EEPROM_Read(0x00);
-    if (DAC_value > 32)
-    {
-        // Invalid -> take the middle value
-        DAC_value = 16;
-    }
-
-
-    // 5V / 32 * DAC_value
-    DACCON1 = DAC_value;
-
-     // ADC input
+   // ADC input
     ADCON0.ADON = 1;            //  ADC on
     ADCON1.ADFM = 1;            // right justified
     ADCON1.ADCS0 = 0;           // Fosc / 64
@@ -626,7 +591,7 @@ void main()
     CM2CON1.C2PCH0 = 0;     // comparator + input pin
     CM2CON1.C2PCH1 = 0;     // comparator + input pin
     
-    // Timer0 timebase  - for sound generation
+    // Timer0 timebase  - 512 microsecond interrupt : 8 MHz / 16 / 256
     OPTION_REG.PS0 = 1;
     OPTION_REG.PS1 = 1;
     OPTION_REG.PS2 = 0;      //prescaler / 16
