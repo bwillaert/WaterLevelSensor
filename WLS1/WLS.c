@@ -15,7 +15,7 @@
 
 
 // I/O pins
-#define DAC_OUT          PORTA.RA0             // DAC OUT --> opamp DC offset
+#define PWM_SOUND        PORTA.RA1             // DAC OUT --> opamp DC offset
 #define BEEP             LATA.LATA2            // OUT  audio -- PWM3 RA2       pin 11 
 #define PI_TX            LATC.LATC5            // OUT  MD pulse                pin 5
 #define DETECTION_PIN    LATC.LATC3            // Digital detection output
