@@ -1,240 +1,242 @@
+//=====================================================================
 /*
- * Project name:  Water Level Sensor
-     Capacitive Water Level Sensor
+ * Project name:  Watersensor
+    Capacitive water level sensor
  * Copyright:
-     (c) BW, 2021
+     (c) BW, 2022.
  * Configuration:
      MCU:             PIC16F1824
      Oscillator:      Internal, 32.0000 MHz
    * NOTES:
-     - Meter = PWM out
-     - Piezo buzzer = PWM output
 */
 //======================================================================
-//
-// constant values
-//
+
+/* IOs
+
+    // INPUT    ===> The PORTA pins can be configured to operate as Interrupt-on-Change (IOC) pins.
+    // p 141 datasheet  --- 13.2   Individual Pin Configuration  --> PORT A falling edge = PB press
+    PB_METER_WATER          RA3 = pin 4
+    PB_CAL_WET                     RA5 = pin 2
+    PB_CAL_DRY                     RA4 = pin 3
+    SENSOR_IN                       RC1 = pin 9           // IN AN comparator 2
+    BATTERY_IN                      RC0 = pin 10        // ADC4 
+  
+    // OUTPUT
+    SENSOR_POWER_OUT                      -------------- >LATA.LATA2
+    METER_PWM_OUT           RC5 = pin 5  PWM1
+    LED_CAL_OUT
+    LED_RED_OUT   
+    LED_GREEN_OUT
+    DEBUG_RS_OUT                RA0 = pin 13
+    
+    COMP2_OUT                       RC4 = pin 6
+*/
+
+// INPUTS
+#define PB_METER_WATER              PORTA.RA3   // pin 4
+#define PB_CAL_DRY                  PORTA.RA5   // pin 2
+#define PB_CAL_WET                  PORTA.RA4   // pin 3
+#define ADC_BATTERY                 1           // RA1 ADC1 pin 12
+#define SENSOR_IN                   PORTC.RC1   // pin 9
+
+// OUTPUTS
+#define DEBUG_RS_OUT               PORTA.RA0    // pin 13
+#define LED_RED_OUT                LATA.LATA2   // pin 11
+#define LED_GREEN_OUT              LATC.LATC3   // pin 7
+#define LED_CAL_OUT                LATC.LATC2   // pin 8
+#define SENSOR_POWER_OUT           LATC.LATC4   // pin 6
+#define METER_PWM_OUT              PORTC.RC5    // pin 5  PWM1
+
+// EEPROM locations
+#define CURRENT_WATER_VALUE      0x00
+#define CAL_DRY_VALUE            0x04
+#define CAL_WET_VALUE            0x08
 
 
-// I/O pins
-#define PWM_SOUND        PORTA.RA1             // DAC OUT --> opamp DC offset
-#define BEEP             LATA.LATA2            // OUT  audio -- PWM3 RA2       pin 11 
-#define PI_TX            LATC.LATC5            // OUT  MD pulse                pin 5
-#define DETECTION_PIN    LATC.LATC3            // Digital detection output
-
-#define PP_BUTTON        PORTA.RA3            // IN   pinpoint button      pin 4
-#define COMP_IN          PORTC.RC1            // IN AN comparator 2 input     pin 9
-#define PWM_OUT          PORTA.RA2            // PWM out  pin 11
-#define LOW_VOLTAGE_IN   PORTA.RA1            // Low battery detection AN1      pin 12
-#define SENSITIVITY_IN   PORTC.RA4            // Sensitivity potmeter  AN3      pin 3
-
-#ifdef LARGE_COIL
-#define TX_PULSE_WIDTH          200      // TX pulse width in microseconds
-#else
-#define TX_PULSE_WIDTH          100      // TX pulse width in microseconds
-#endif
-
-#define PULSE_TIME_DIVIDER       4       // * 512 micros
-
-#define MAX_PULSEDIFF            64
-
-#define ACCUMULATE_MEASURE_CNT   5       // *  PULSE_TIME_DIVIDER * 512 micros
-#define LV_TIME_DIVIDER          50000   // * 512 micros -- battery voltage check - every 25 s
-#define SENSITIVITY_TIME_DIVIDER 2000    // * 512 micros = 1s -- sensitivity potmeter check - every  1 s
-#define LOW_BATT_LIMIT           0x200   // 10 bits ADC  - max 3FF   min 10V - 47K+10K => 1.75V =358 / 0X166
-#define STARTUP_DELAY            5000     // * 512 micros -- startup settling time
-#define COIL_TIMEOUT             2        // * 512 micros -- coil pulse timeout
-#define CALIBRATION_DELAY        1500     // * 2 ms - delay between 2 calibration steps
-#define ADC_TARGET               830      // (5V / 1024) * ADC_TARGET = DC offset
-#define ADC_TOLERANCE            10
-#define PULSE_ARRAY_SIZE         32
-
-#define DC_OFFSET_MARGIN         50       // 0-255 = 0-5V
+// TIMEOUTS
+#define LED_ERROR_BLINK_INTERVAL           1000  // * 512 micros
+#define TIMEOUT_3_SECONDS                  6000 // * 512 micros
+#define TIMEOUT_5_SECONDS                 10000 // * 512 micros
 
 
+// BATTERY VOLTAGE
+// 78L05 min 7.2V input 
+// 9V  ---> diode ---> 8.4V ---47K---ADC----68K---- Gnd 
+// 7.2 V / (68+47) * 68 =  4.26V  with ADC 0..255 = 0...5V : 4.43V = 217.
+#define BATTERY_CRITICAL_VALUE  217
 
-#define TRUE 1
-#define FALSE 0
+/* 
+STATUS LED:
+    - GREEN STEADY              all OK
+    - RED STEADY                low battery
+    - RED BLINKING              sensor error
+    - YELLOW BLINKING           calibration error
+*/
 
-#define ON  1
-#define OFF 0
+// GENERIC
+#define TRUE            1
+#define FALSE           0
+#define ON              1
+#define OFF             0
+#define IN              1
+#define OUT             0
 
-#define IN 1
-#define OUT 0
+#define GREEN           4
+#define RED             5
+#define YELLOW          6
 
-
-// globals
-static unsigned int measurecnt;
-static unsigned int accumulate_measure_cnt;
-static unsigned int pulse_time;
-static unsigned char pulse_flag;
-static unsigned int beepdivider;
-static unsigned int alternate_beepdivider;
-static unsigned int alternate_beepdivider_time;
-static unsigned int beepcnt;
-static unsigned int lv_time;
-static unsigned char lv_flag;
-static unsigned char sensitivity_flag;
-static unsigned int sensitivity_time;
-static unsigned int  startup_delay;
-static unsigned int coil_timeout;
-static unsigned char DAC_value;
-static unsigned int calibration_delay;
-static unsigned char calibration_steps;
-static unsigned char calibration_busy;
-static unsigned char PWM_duty;
-static unsigned char pulse_average_cnt;
-static unsigned long pulse_average_array[PULSE_ARRAY_SIZE];
-static unsigned long pulse_average;
-static unsigned char motion_cal_cnt ;
-static unsigned int measure_cal;
-static unsigned char pulse_array_size;
-static unsigned char pulse_array_shift;
-static unsigned int DC_offset;
-//static unsigned int max_diff_time;
-//static unsigned int max_pulsediff;
+// STATIC VARIABLES
+static unsigned long actual_nr_pulses;
+static unsigned long new_nr_pulses;
+static unsigned long  cal_wet_pulses;
+static unsigned long cal_dry_pulses;
+static unsigned long current_nr_pulses;
+static unsigned long cal_average;
+static unsigned int LED_error_blink_cnt;
+static unsigned int sleep_timeout;
+static unsigned char sleep_flag;
+static unsigned long old_water_value;
+static unsigned long new_water_value;
+static unsigned int pb_cal_timeout;
+static unsigned char battery_value;
+static unsigned char LED_COLOR;
+static unsigned char pb_cal_flag;
+static unsigned long old_EEPROM_value;
+static unsigned char cal_cnt;
 
 
-
-//======================================================================
-//
-//  ISR
-//  Handle timer interrupt as timebase for sound / timing
-//
-//
+// ISR
 void interrupt(void)
 {
-
-     // Timer0 interrupt
-     if (INTCON.TMR0IF)
-     {
-
-          // sound
-          if (beepcnt)
-          {
-            beepcnt--;
+    // TIMER0 interrupt
+    if (INTCON.TMR0IF)
+    {
+        if (sleep_timeout)
+        {
+            sleep_timeout--;
+            sleep_flag = FALSE;
+            if (!sleep_timeout)
             {
-               if (!beepcnt)
-               {
-                  BEEP = !BEEP;
-                  beepcnt = beepdivider ;
-                }
+                sleep_flag = TRUE;
             }
-          }
-          else
-          {
-              beepcnt = beepdivider;
-          }
-
-
-          // induction pulse
-          if (pulse_time)
-          {
-             pulse_time--;
-             if (!pulse_time)
-             {
-                // reload pulse time divider
-                pulse_time = PULSE_TIME_DIVIDER;
-                pulse_flag = TRUE;
-             }
-          }
-
-          // low voltage alarm
-          if (lv_time)
-          {
-             lv_time--;
-             if (!lv_time)
-             {
-                // reload low voltage control divider
-                lv_time = LV_TIME_DIVIDER;
-                lv_flag = TRUE;
-             }
-          }
-          
-         // sensitivity check
-          if (sensitivity_time)
-          {
-             sensitivity_time--;
-             if (!sensitivity_time)
-             {
-                // reload low voltage control divider
-                sensitivity_time = SENSITIVITY_TIME_DIVIDER;
-                sensitivity_flag = TRUE;
-             }
-          }
+        }
         
-         // startup delay
-          if (startup_delay)
-          {
-             startup_delay--;
-          }
-          
-          // coil timeout
-          if (coil_timeout)
-          {
-             coil_timeout--;
-          }
+        if (pb_cal_timeout)
+        {
+            pb_cal_timeout--;
+            pb_cal_flag = FALSE;
+            if (! pb_cal_timeout)
+            {
+                pb_cal_flag = TRUE;
+            }
+        }
+        
+        if (LED_error_blink_cnt)
+        {
+            LED_error_blink_cnt--;
+            if (!LED_error_blink_cnt)
+            {
+                if (LED_COLOR == RED)
+                {
+                    LED_RED_OUT = !LED_RED_OUT;
+                    LED_GREEN_OUT = OFF;
+                }
+                else if (LED_COLOR == GREEN)
+                {
+                    LED_RED_OUT = OFF;
+                    LED_GREEN_OUT = !LED_GREEN_OUT;
+                }
+                else if (LED_COLOR == YELLOW)
+                {
+                    LED_RED_OUT = !LED_RED_OUT;
+                    LED_GREEN_OUT = LED_RED_OUT;
+                }
+                LED_error_blink_cnt = LED_ERROR_BLINK_INTERVAL;
+            }
+        }
+       // reset TIMER0 interrupt flag
+        INTCON.TMR0IF = FALSE;
+    }
+    
+    // SENSOR PULSE COMPARATOR
+    if (PIR2.C2IF)
+    {
+        actual_nr_pulses++;
+        PIR2.C2IF = FALSE;
+    }
+    
+    // Interrupt On Change PORTA pins
+    if (IOCAF.IOCAF3) { IOCAF.IOCAF3 = FALSE;}
+    if (IOCAF.IOCAF4) { IOCAF.IOCAF4 = FALSE;}
+    if (IOCAF.IOCAF5) { IOCAF.IOCAF5 = FALSE;}
+    
+ }
+ 
+// Shoz meter value
+void show_meter(unsigned char value)
+{
+     PWM1_Set_Duty(value);
+}
 
-          
-        // reset interrupt flag
-        INTCON.TMR0IF = 0;
+ // De-activate ERROR LED
+ void NO_ERROR()
+ {
+     LED_error_blink_cnt = 0;
+     LED_RED_OUT = OFF;
+     LED_GREEN_OUT = OFF;
+ }
 
+// ERROR LED status GREEN / RED / YELLOW
+ void ERROR_LED(unsigned char color, unsigned char blink)
+ {
+     if (color == GREEN)
+     {
+         LED_GREEN_OUT = ON;
+         LED_RED_OUT = OFF;
      }
-}
-
-
-
-//======================================================================
-//
-//  play sound on a pin with a frequency and duration
-//  period in 100 microseconds
-//  duration in  100 microseconds
-//
-void sound (unsigned int period, unsigned long duration)
-{
-      unsigned long time_played;
-      int i;
-      time_played = 0;
-      // period /2
-      period >>=1 ;
-      while (time_played < duration)
-      {
-          for (i = 0; i < period ; i++)
-          {
-              Delay_us(100);
-          }
-          time_played += period;
-          // toggle the sound pin
-          BEEP = !BEEP;
+     else if (color == RED)
+     {
+         LED_GREEN_OUT = OFF;
+         LED_RED_OUT = ON;
      }
-}
+     else if (color == YELLOW)
+     {
+          LED_GREEN_OUT = ON;
+          LED_RED_OUT = ON;
+    }
+    else
+    {
+          LED_GREEN_OUT = OFF;
+          LED_RED_OUT = OFF;
+    }
+    LED_COLOR = COLOR;
+    if (blink && !LED_error_blink_cnt)
+    {
+        LED_error_blink_cnt = LED_ERROR_BLINK_INTERVAL;
+    }
+ }
 
-// Detector start sound
-void start_sound()
+ 
+// EEPROM access  ---> unsigned long ?
+void EEPROM_set(unsigned char address, unsigned long new_EEPROM_value)
 {
-    INTCON.GIE = 0;
-    sound ( 50, 1000);    // 200 Hz
-    sound ( 20, 1000);    // 500 Hz
-    sound ( 10, 1000);    // 1 KHz
-    // reset interrupt flags
-    TMR0 = 0;
-    INTCON.T0IF = 0;
-    INTCON.GIE = 1;
+    old_EEPROM_value = EEPROM_read(address);
+    if (new_EEPROM_value != old_EEPROM_value)
+    {
+        EEPROM_Write(address, new_EEPROM_value & 0x000000FF); 
+        EEPROM_Write(address+1, (new_EEPROM_value & 0x0000FF00) >> 8); 
+        EEPROM_Write(address+2, (new_EEPROM_value & 0x00FF0000) >> 16); 
+        EEPROM_Write(address+3, (new_EEPROM_value & 0xFF000000) >> 24); 
+    }
 }
 
-// Calibration finished sound
-void ready_sound()
+unsigned long EEPROM_get(unsigned char address)
 {
-    sound ( 10, 300);    // 1 KHz
-    Delay_ms(200);
-    sound ( 20, 300);    // 500 Hz
-    Delay_ms(200);
-    sound ( 10, 300);    // 1 KHz
+    return EEPROM_Read(address) | ( EEPROM_Read(address+1) << 8) | ( EEPROM_Read(address+2) << 16) |( EEPROM_Read(address+3) << 24);
 }
 
-
-// Aux: return abs value
-unsigned long absvalue(unsigned long a, unsigned long b)
+// Abs value
+unsigned long abs_value(unsigned long a, unsigned long b)
 {
     if (a > b)
     {
@@ -244,331 +246,108 @@ unsigned long absvalue(unsigned long a, unsigned long b)
     {
       return (b-a);
     }
-
 }
 
-//
-// This is called every 2 ms
-// Calibrate opamp DC offset to 4.0 V measured after TX pulse
-//
-void calibrate_offset()
+
+// Sensor measurement
+unsigned long measure_sensor()
 {
-     static char old_calibration_step = 0;
-     char calibration_step = 0;
-     calibration_delay--;
-     if (!calibration_delay )
-     {
-        // Number of 2 ms steps between a DC offset adjustment step
-        calibration_delay = CALIBRATION_DELAY;
-        
-        // Take DC sample and adjust offset DAC accordingly
-        Delay_us (2 * TX_PULSE_WIDTH);
-        DC_offset = ADC_Read(6) ;
- 
-        // Is calibration finished ?
-        if (calibration_steps)     
-        {   
-          if (absvalue(DC_offset, ADC_TARGET) < ADC_TOLERANCE)
-          {
-             calibration_steps = 0;
-          }
-          else
-          {
-            // Increasing the DAC value reduces the DC offset
-            if (DC_offset < ADC_TARGET )
-            {     
-                if (DAC_value > 0)
-                {     
-                   calibration_step = -1;    
-                }
-            }
-            else
-            {
-                if (DAC_value < 31)
-                {
-                   calibration_step = 1;
-                }
-            }
-            // Check for sign reversal
-            // Except the first time where old_calibration_step is invalid ( 0 )
-            if (calibration_steps && (old_calibration_step != 0) && (old_calibration_step != calibration_step))
-            {
-              // Sign reversal
-              calibration_steps = 0;
-              // Do not change the DAC output anymore
-              calibration_step = 0;
-            }  
-            
-             // When no sign reversal :  change DAC
-             DAC_value += calibration_step;
-             DACCON1 = DAC_value;
-
-            // Take backup of this value
-            old_calibration_step = calibration_step;
-
-            if (calibration_steps)
-            {
-               calibration_steps--;
-            }
-          }
-        }
-        // Check if calibration is finished - calibration_steps  = 0
-        else
-        {
-
-           // Save the current DAC value in EEPROM for the start of a next
-           // calibration.
-           EEPROM_Write(0x00,DAC_value);
-
-           
-           // Set the comparator 2 positive input 
-           // DC generated by PWM2
-           DC_offset >>= 2;           // 8 bit : 0-255 : 0-5V
-           DC_offset = DC_offset - DC_OFFSET_MARGIN; // 1 V lower
-           PWM2_Set_Duty(DC_offset);
-  
-           // Startup delay - stabilisation
-           calibration_busy = 0;
- //          startup_delay = STARTUP_DELAY;
-           ready_sound();
-       }
-    }
-
+    // Return 10 bit PWM result for meter
+    actual_nr_pulses = 0;
+    Delay_ms(1000);
+    new_nr_pulses = actual_nr_pulses;
+    cal_wet_pulses = EEPROM_Read(CAL_WET_VALUE);
+    cal_dry_pulses = EEPROM_Read(CAL_DRY_VALUE);
+    if (cal_dry_pulses == 0xFFFFFFFF) { ERROR_LED(YELLOW, TRUE); return 0; }
+    if (cal_wet_pulses == 0xFFFFFFFF) { ERROR_LED(YELLOW, TRUE); return 0; }
+    if (abs_value(cal_dry_pulses, cal_wet_pulses) < 100) {ERROR_LED(YELLOW, TRUE); return 0; }
+    if (cal_dry_pulses < cal_wet_pulses) {ERROR_LED(YELLOW, TRUE); return 0; }
+    // Convert nr_pulses to 0...1024
+    if (!new_nr_pulses) { ERROR_LED(RED, TRUE); return 0; } 
+    NO_ERROR();
+    if (new_nr_pulses < cal_wet_pulses) new_nr_pulses = cal_wet_pulses;
+    if (new_nr_pulses > cal_dry_pulses) new_nr_pulses = cal_dry_pulses;
+    
+    current_nr_pulses = ((new_nr_pulses - cal_wet_pulses) << 10) / (cal_dry_pulses - cal_wet_pulses);
+    
+    // Invert current value ... ??? Higher freq = smaller C = dry 
+    
+    return current_nr_pulses;
 }
-
-//===================================
-//
-// TX pulse + measure return pulse
-//
-void tx_pulse_processing()
-{
-      static unsigned long pulsediff = 0;
-      static unsigned long pulsevalue = 0;
-      char i = 0;
-  
-      // start measurement
-
-      // Disable interrupts
-      INTCON.GIE = 0;
-
-      // Reset the pulse width counter -- stop T1
-      T1CON.TMR1ON = 0;
-      TMR1H = 0;
-      TMR1L = 0;
-      PIR1.TMR1IF = 0;
-
-      // Start the TX pulse
-      PI_TX = 0;
-      Delay_us(TX_PULSE_WIDTH);
-      // Start T1
-      T1CON.TMR1ON = 1;
-      // Stop the TX pulse
-      T1CON.TMR1ON = 1;
-
-      PI_TX = 1;
-
-      // Re-enable interrupts
-      INTCON.GIE = 1;
-      
-      // Wait for comparator2 high only when calibration has finished
-      if (!calibration_busy )
-      {
-         coil_timeout = COIL_TIMEOUT;    
-         while(!CM2CON0.C2OUT && coil_timeout);
-         if (!coil_timeout)
-         {
-            alternate_beepdivider_time = 5;
-            alternate_beepdivider = 8;
-            beepdivider = 8;
-            return;
-         }
-
-          // Wait for comparator2 to go low again
-          coil_timeout = COIL_TIMEOUT;
-          while (CM2CON0.C2OUT && coil_timeout);
-          if (!coil_timeout)
-          {
-             alternate_beepdivider_time = 5;
-             alternate_beepdivider = 8;
-             beepdivider = 8;
-             return;
-          }
-      } // if !calibration_busy
-      else
-      {
-         calibrate_offset();
-         return;
-      }
-
-  
-     // Accumulate a number of measurements for more resolution
-     // e.g. 4 measurements  every 2 ms = 125 Hz measurements
-     // Pulse width = 100 micros @ 32 MHz = Timer1 value: 3300
-     pulsevalue += ((TMR1H<<8) | TMR1L);
-     // Reset the pulse width counter
-     TMR1H = 0;
-     TMR1L = 0;
-     PIR1.TMR1IF = 0;
-     T1CON.TMR1ON = 0;
-
-         
-     // Check if measurement accumulation is complete
-     measurecnt--;
-     if (!measurecnt)
-     {
-        // Wait a number of measurements
-        if (!startup_delay)
-        {
-           // Get the average pulse value
-           pulse_average = 0;
-           for (i = 0; i < pulse_array_size; i++)
-           {
-              pulse_average += pulse_average_array[i];
-           }
-           pulse_average >>= pulse_array_shift;  // divide by 
-           
-           // When in PinPoint mode: increase the pulse_average artificially
-           // A measurement that is lower will be discarded
-           // In PP mode we want a clear signal on top of the target
-           if (!PP_BUTTON)
-           {
-              pulse_average += (accumulate_measure_cnt<<1);
-           }
-
-           //  Get absolute difference with average value
-           // Only when the new pulsevalue is larger than the pulse_average,
-           // we take it into account to generate an alarm sound
-           // 64 = 0.5% ---> 12800 / 4 = 3200 --> 64 = 2%         
-           if (pulsevalue > pulse_average)
-           {
-             pulsediff = pulsevalue - pulse_average; 
-           }
-           else
-           {
-              pulsediff  = 0; 
-           }
    
-
-           //  Limit pulse diff
-           if (pulsediff > MAX_PULSEDIFF)
-           {
-             pulsediff = MAX_PULSEDIFF;
-             DETECTION_PIN = 1;
-           }
-           else
-           {
-             DETECTION_PIN = 0;
-           }
  
-           // Calculate audio divider -- based on 500us timer interrupt;
-           // alternate_beepdivider_time is used for other audio signals like
-           // low power, coil error, ...
-           if (!alternate_beepdivider_time)
-           {
-              beepdivider = (2048 - (pulsediff << 5)) + 1;
-           }
-           else
-           {
-              alternate_beepdivider_time--;
-              beepdivider = alternate_beepdivider;
-           }
-           
-           // Quicker update when frequency changes
-           if (beepdivider < beepcnt) 
-           {
-              beepcnt = beepdivider;
-           }
-         } // if (!startup_delay)
-       
-        // Add new sample -- when pinpoint pushbutton is not active
-         if (PP_BUTTON)
-         {
-             pulse_average_array[pulse_average_cnt%pulse_array_size] = pulsevalue;
-         }
+ // Reset sleep timeout counter
+ void reset_sleep()
+ {
+    sleep_timeout = TIMEOUT_3_SECONDS;
+    sleep_flag = FALSE;
+ }
+ 
+ // Prepare for sleep
+ void sleep_entry()
+ {
+     SENSOR_POWER_OUT = OFF;
+     NO_ERROR();
+     sleep_timeout = 0;
+     pb_cal_timeout = 0;
+     LED_error_blink_cnt = 0;
+ }
+ 
+ // Exit from sleep
+ void sleep_exit()
+ {
+     SENSOR_POWER_OUT = ON;
+     NO_ERROR();
+ }
+ 
 
-         // 
-         // Restart new values
-         //
-         pulsevalue  = 0;
-         pulse_average_cnt++;
-         measurecnt = accumulate_measure_cnt;
-     } // if (!measurecnt
-
-
-}
-
-//===================================
-//
-// main idle loop
-//
-void main()
-{
-    unsigned int batt_voltage;
-    unsigned int new_sensitivity, old_sensitivity = 1;
-    accumulate_measure_cnt = ACCUMULATE_MEASURE_CNT;
-    measurecnt = accumulate_measure_cnt;
-    sensitivity_flag = TRUE;
-    pulse_flag = FALSE;
-    beepdivider = 2048;
-    beepcnt = 2048;
-    lv_time = LV_TIME_DIVIDER;
-    lv_flag = FALSE;
-    startup_delay = STARTUP_DELAY;
-    sensitivity_time = SENSITIVITY_TIME_DIVIDER;
-    pulse_time = PULSE_TIME_DIVIDER;
-    DAC_value = 16;
-    calibration_delay = CALIBRATION_DELAY;
-    calibration_steps = 31;
-    calibration_busy = 1;
-    PWM_duty = 0;  // 0...127
-    pulse_average_cnt = 0;
-    pulse_array_size = PULSE_ARRAY_SIZE;
-    pulse_array_shift = 5;
-    alternate_beepdivider_time = 0;
-
+ // Initialize all peripherals
+ void init()
+ {
     // oscillator
-    OSCCON= 0xF0;
+    OSCCON = 0xF0;
     
     // GPIO init
     // PORT A
-    TRISA.TRISA0 = OUT;  // PIN 13DAC out
+    TRISA.TRISA0 = OUT;  // PIN 13
     PORTA.RA0 = 1;
-    WPUA.WPUA0 = 0;     // disable pullup R for DAC out !!
-    TRISA.TRISA1 = IN;   // PIN 12 - low battery detection
+    TRISA.TRISA1 = OUT;   // PIN 12
     PORTA.RA1 = 1;
-    TRISA.TRISA2 = OUT;  // PIN 11  - COMP1 out  
+    TRISA.TRISA2 = OUT;  // PIN 11
     PORTA.RA2 = 1;
     TRISA.TRISA3 = OUT;  // PIN 4
     PORTA.RA3 = 1;
-    TRISA.TRISA4 = IN;   // PIN 3 sensitivity potmeter in 
+    TRISA.TRISA4 = IN;   // PIN 3
     PORTA.RA4 = 1;
-    TRISA.TRISA5 = OUT;  // PIN 2 PWM2 out
+    TRISA.TRISA5 = OUT;  // PIN 2
     PORTA.RA5 = 1;
 
     // PORT C
-    TRISC.TRISC0 = IN;  // PIN 10 comparator2 + in
+    TRISC.TRISC0 = IN;  // PIN 10 battery in
     PORTC.RC0 = 1;
     TRISC.TRISC1 = IN;  // PIN 9 = comparator in
     PORTC.RC1 = 1;
-    TRISC.TRISC2 = IN;  // PIN 8 = ADC6 in
+    TRISC.TRISC2 = OUT;  // PIN 8 
     PORTC.RC2 = 1;
-    TRISC.TRISC3 = OUT;  // PIN 7 = RS232 out
+    TRISC.TRISC3 = OUT;  // PIN 7
     PORTC.RC3 = 1;
-    TRISC.TRISC4 = OUT; // PIN 6 comparator 2 out
+    TRISC.TRISC4 = OUT; // PIN 6 
     PORTC.RC4 = 1;
-    TRISC.TRISC5 = OUT; // PIN 5 pulse out
+    TRISC.TRISC5 = OUT; // PIN 5  PWM1
     PORTC.RC5 = 1;
 
     // Analog input pins
-    ANSELA.ANSA0 = 1;     // DAC out
-    ANSELA.ANSA1 = 1;     // low battery detection
-    ANSELA.ANSA4 = 1;     // sensititity potmeter in
-    ANSELC.ANSC0 = 1;     // comparator 2 + in
-    ANSELC.ANSC1 = 1;     // pulse in
-    ANSELC.ANSC2 = 1;     // pulse in
-    
+    ANSELC.ANSC0 = 1;     // battery in
+    ANSELC.ANSC1 = 1;     // comparator in
 
-   // ADC input
+    
+    // PORTA Interrupt On Change
+    INTCON. IOCIE = 1;
+    IOCAN.IOCAN3 = 1;                 // Falling edge PORTA.3
+    IOCAN.IOCAN4 = 1;                 // Falling edge PORTA.4
+    IOCAN.IOCAN5 = 1;                 // Falling edge PORTA.5
+ 
+     // ADC input
     ADCON0.ADON = 1;            //  ADC on
     ADCON1.ADFM = 1;            // right justified
     ADCON1.ADCS0 = 0;           // Fosc / 64
@@ -584,118 +363,120 @@ void main()
     CM2CON0.C2SP = 1;       // high speed
     CM2CON0.C2ON = 1;       // comp is enabled
     CM2CON0.C2HYS = 1;      // hysteresis enabled
-    CM2CON0.C2SYNC = 1;     // comp output synchronous with timer 1
+    CM2CON0.C2SYNC = 0;     // comp output synchronous with timer 1
 
     CM2CON1.C2NCH0 = 1;     // C12IN1-
     CM2CON1.C2NCH1 = 0;     // C12IN1-
-    CM2CON1.C2PCH0 = 0;     // comparator + input pin
-    CM2CON1.C2PCH1 = 0;     // comparator + input pin
+    CM2CON1.C2PCH0 = 0;     // comparator + Fixed Voltage Reference
+    CM2CON1.C2PCH1 = 1;     // comparator + Fixed Voltage Reference
+    CM2CON1.C2INTP = 1;       // comparator interrupt on positive edge 
+    CM2CON1.C2INTN = 0;
+    PIE2.C2IE = 1;                      // comparator 2 interrupt enabled
     
-    // Timer0 timebase  - 512 microsecond interrupt : 8 MHz / 16 / 256
+    // Fixed Voltage Reference
+    FVRCON.FVREN = 1;          // Fixed Voltage Reference Enable bit
+    FVRCON.CDAFVR0 = 0;        // Fixed Voltage Reference Peripheral output is 2x (2.048V)
+    FVRCON.CDAFVR1 = 1;        // Fixed Voltage Reference Peripheral output is 2x (2.048V)
+
+    // Timer0 timebase  32 MHz/4 --> PS/16 --> overflow/256 = 2 kHz  ==> 512 micros
     OPTION_REG.PS0 = 1;
     OPTION_REG.PS1 = 1;
-    OPTION_REG.PS2 = 0;      //prescaler / 16
+    OPTION_REG.PS2 = 0;          // Prescaler / 16
     OPTION_REG.PSA = 0;
-    OPTION_REG.TMR0CS = 0;  // FOSC / 4   --> 8 MHz
-    INTCON.TMR0IE = 1;          // timer0 interrupt enable
+    OPTION_REG.TMR0CS = 0;       // FOSC / 4   --> 8 MHz
+    INTCON.TMR0IE = 1;           // timer0 interrupt enable
+
+    // PWM1 - RC5 - pin5
+    PWM1_Init(250000);           // 250 kHz
+    PWM1_Set_Duty(0);
+    PWM1_Start();
+
+    // Global Interrupt Enable
+    INTCON.GIE = 1;
+    
+    // Variables
+    reset_sleep();
+ }
  
-
  
-   //--------------------
-   INTCON.GIE = 1;
-   
-   
-   // Init PWM output = Comp2in+
-   // PWM2 - pin 2 - on RA5
-   APFCON1.CCP2SEL = 1;
-  // APFCON1.P1CSEL = 1;
-   PWM2_Init(250000);          // 250 kHz
-   PWM2_Set_Duty(127);  
-   PWM2_Start();
+//===================================
+//
+// MAIN
+//
+void main()
+{
 
-    // Startup sound
-    start_sound();
+    // Initialize everything
+    init();
 
-    // Main loop
+    // Idle loop
     while(1)
     {
-      // Check pulse time
-      if (pulse_flag)
-      {
-         // This is where TX pulse + RX processing takes place
-         tx_pulse_processing();
-         pulse_flag = FALSE;
-      }
+        //
+        // ======= PUSHBUTTONS
+        //
+        // PB_METER_WATER
+        if (!PB_METER_WATER && PB_CAL_DRY && PB_CAL_WET)
+        {
+            reset_sleep();
+            
+            old_water_value = EEPROM_get (CURRENT_WATER_VALUE);
+            show_meter (old_water_value);
+            
+            battery_value = ADC_Read((ADC_BATTERY) >> 2);
+            if (battery_value < BATTERY_CRITICAL_VALUE)  ERROR_LED(RED, FALSE);
+            else ERROR_LED (GREEN, FALSE);
+         
+            // Measure during  1 second while the previous value is shown
+            new_water_value = measure_sensor();  
+            EEPROM_set (CURRENT_WATER_VALUE, new_water_value);
+            show_meter (new_water_value);
+        }
 
+         
+        // PB_CAL_DRY / PB_CAL_WET
+        if ( (PB_METER_WATER &&  !PB_CAL_DRY && PB_CAL_WET) || 
+             (PB_METER_WATER && PB_CAL_DRY && !PB_CAL_WET))
+        {
+            reset_sleep();
+            
+            if  (pb_cal_flag)
+            {
+                // Press CAL button during 5 seconds
+                // After 5 seconds: CAL_LED ON during 4 seconds calibration
+                // measure 4 times and average
+                // store in EEPROM
+                // CAL_LED OFF ==> calibration finished
+                LED_CAL_OUT = ON;
+                cal_average = 0;
+                for (cal_cnt = 0; cal_cnt < 4; cal_cnt++)
+                {
+                    cal_average +=  measure_sensor(); 
+                }
+                cal_average >>= 2;
 
-      // Check battery voltage
-      if (lv_flag)
-      {
-           lv_flag = FALSE;
-          //  10 bit ADC value  -> max = 0x3FF
-           batt_voltage =  ADC_Read(1);
-           // compare with half of the value
-           if (batt_voltage < LOW_BATT_LIMIT )
-           {
-              alternate_beepdivider_time = 250;
-              alternate_beepdivider_time = 4;
+                 if (!PB_CAL_DRY)  EEPROM_write (CAL_DRY_VALUE, cal_average);
+                 else if (!PB_CAL_WET)  EEPROM_write (CAL_WET_VALUE, cal_average);
+                 LED_CAL_OUT = OFF;
+                 pb_cal_timeout = TIMEOUT_5_SECONDS;
+                 pb_cal_flag = FALSE;
            }
-      }
-      
+        }
+        else
+        {
+            pb_cal_timeout = TIMEOUT_5_SECONDS;
+            pb_cal_flag = FALSE;
+        }
 
-      // Check sensitivity potmeter
-      if (sensitivity_flag)
-      {
-         //  10 bit ADC value  -> max = 0x3FF
-         // reduced to 6 bits: 0...63
-         new_sensitivity = (ADC_Read(3) >> 4);
-         if (new_sensitivity < 4)
-         {
-            new_sensitivity = 4;
-         }
-         if ( new_sensitivity > 63)
-         {
-            new_sensitivity = 63;
-         }
-         
-         if (absvalue(old_sensitivity, new_sensitivity) > 1)
-         {
-            accumulate_measure_cnt = new_sensitivity;
-         }
-         
-         // Take backup of current sensitivity setting
-         old_sensitivity = new_sensitivity;
-         sensitivity_flag = FALSE;
-         
-         // Adjust averaging array size
-         // Adjust comparator slicing value
-         if (new_sensitivity < 15)
-         {
-             pulse_array_size = 32;
-             pulse_array_shift = 5;
-             PWM2_Set_Duty(DC_offset - 10);
-         }
-         else if (new_sensitivity < 30)
-         {
-             pulse_array_size = 16;
-             pulse_array_shift = 4;
-             PWM2_Set_Duty(DC_offset - 5);
-         }
-         else if (new_sensitivity < 40)
-         {
-             pulse_array_size = 8;
-             pulse_array_shift = 3;
-             PWM2_Set_Duty(DC_offset);
-         }
-         else 
-         {
-             pulse_array_size = 4;
-             pulse_array_shift = 2;
-             PWM2_Set_Duty(DC_offset);
-         }
-          
-      } // if sensitivity flag
- 
-    }  // while(1)
 
-} //~!
+        //
+        // SLEEP
+        //
+        if (sleep_flag)
+        {
+            sleep_entry();
+            asm SLEEP;
+            sleep_exit();
+         }
+    }
+}
