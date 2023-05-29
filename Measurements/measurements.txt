@@ -1,0 +1,25 @@
+SENSOR -- CAPACITIVE OSCILLATOR
+=================================
+
+Draad 2.5 m: - CSM medium range CPSRNG<1:0>: Capacitive Sensing Current Range bit
+
+	- droog : 	12.5 kHz
+	- nat :		5.9 kHz
+	
+Zonder sensor draad:	151 kHz ==> overflow TMR1
+
+	
+Pin 3 : oscillator zaagtand
+
+Stroomopname: 		13 mA
+
+
+   // Capacitive sensor
+    CPSCON0.CPSRM = 0;    // Low range - internal voltage reference
+    CPSCON0.CPSRNG0 = 0;  // oscillator medium range   [ 12 kHz  dry]
+    CPSCON0.CPSRNG1 = 1;  // oscillator medium range
+    
+    
+    CPSCON0.CPSRNG0 = 1;  // oscillator high range   [ 57 kHz  dry]
+    CPSCON0.CPSRNG1 = 1;  // oscillator high range
+
