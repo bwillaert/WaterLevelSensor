@@ -1,0 +1,60 @@
+Plug in board with mini-USB connector
+No extra tty device created
+
+lsusb:
+Bus 003 Device 008: ID 1a86:7523 QinHeng Electronics CH340 serial converter
+
+
+dmesg:
+[ 1686.823862] usb 3-1: new full-speed USB device number 6 using xhci_hcd
+[ 1686.973030] usb 3-1: New USB device found, idVendor=1a86, idProduct=7523, bcdDevice= 2.54
+[ 1686.973041] usb 3-1: New USB device strings: Mfr=0, Product=2, SerialNumber=0
+[ 1686.973045] usb 3-1: Product: USB2.0-Ser!
+[ 1686.975231] ch341 3-1:1.0: ch341-uart converter detected
+[ 1686.975808] ch341-uart ttyUSB0: break control not supported, using simulated break
+[ 1686.975931] usb 3-1: ch341-uart converter now attached to ttyUSB0
+[ 1687.504868] input: BRLTTY 6.4 Linux Screen Driver Keyboard as /devices/virtual/input/input34
+[ 1687.505529] usb 3-1: usbfs: interface 0 claimed by ch341 while 'brltty' sets config #1   // <=========================
+[ 1687.505907] ch341-uart ttyUSB0: ch341-uart converter now disconnected from ttyUSB0
+[ 1687.505926] ch341 3-1:1.0: device disconnected
+[ 1756.764757] usb 3-1: USB disconnect, device number 6
+
+
+ sudo apt remove brltty
+ 
+ 
+dmesg:
+[ 2111.660433] usb 3-1: new full-speed USB device number 9 using xhci_hcd
+[ 2111.809219] usb 3-1: New USB device found, idVendor=1a86, idProduct=7523, bcdDevice= 2.54
+[ 2111.809232] usb 3-1: New USB device strings: Mfr=0, Product=2, SerialNumber=0
+[ 2111.809237] usb 3-1: Product: USB2.0-Ser!
+[ 2111.811151] ch341 3-1:1.0: ch341-uart converter detected
+[ 2111.811548] ch341-uart ttyUSB0: break control not supported, using simulated break
+[ 2111.811621] usb 3-1: ch341-uart converter now attached to ttyUSB0  // <====================================
+
+
+==> /dev/ttyUSB0
+
+board: Arduino Nano
+port : /dev/ttyUSB0
+
+compile sketch
+
+upload:
+avrdude: ser_open(): can't open device "/dev/ttyUSB0": Permission denied
+Failed uploading: uploading error: exit status 1
+==> sudo usermod -a -G dialout $USER  
+==> sudo chmod a+rw /dev/ttyUSB0
+
+Upload fails
+avrdude: stk500_recv(): programmer is not responding
+avrdude: stk500_getsync() attempt 1 of 10: not in sync: resp=0x00
+
+===> Change Tools->Processor->Atmega 328P to Atmega 328P (Old Bootloader).
+
+
+
+
+
+
+
